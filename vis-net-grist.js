@@ -6,18 +6,17 @@ const dropdown_table_src = document.getElementById('dropdown_table_src');
 const dropdown_nodes   = document.getElementById('dropdown_nodes');
 const dropdown_refs  = document.getElementById('dropdown_refs');
 
-const button_choose  = document.getElementById('button_choose');
 const button_update  = document.getElementById('button_update');
-const button_modify  = document.getElementById('button_modify');
+const button_new  = document.getElementById('button_new');
+const button_del  = document.getElementById('button_del');
 
 let current_table_src= '';
 let current_nodes_col  = '';
 let current_ref_col = '';
 let current_idx  = null;
 let cfg_table_id;
+let current_mappings = null;
 let rawNodes;
-let rawEdges;
-
 //------------------------------------------------------------------------------
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -26,17 +25,21 @@ initialize_widget();
 grist.ready({ 
   requiredAccess: 'full',
   columns: [
-        { name: "table_source",  title: "table_source", type: "Text" },
-        { name: "nodes_column",  title: "nodes_column", type: "Text"},
-        { name: "ref_column",    title: "ref_column", type: "Text"},
-      ]
+        { name: "table_source",  title: "Nodes Table", description: "Names of tables for nodes.", type: "Text" },
+        { name: "nodes_column",  title: "Labels Column", description: "Names of columns for node labels", type: "Text"},
+        { name: "ref_column",    title: "Refs Column (Edges)", description: "Names of ref (or ref list) column for edges",  type: "Text"},
+      ],
 });
 
-grist.onRecord(record => { 
-  current_table_src = record.table_source;
-  current_nodes_col   = record.nodes_column;
-  current_ref_col   = record.ref_column;
-  current_idx   = record.id;
+grist.onRecord((record, mappings) => { 
+  current_mappings = mappings;
+  const mapped=grist.mapColumnNames(record);
+  current_table_src = mapped.table_source;
+  current_nodes_col  = mapped.nodes_column;
+  current_ref_col   = mapped.ref_column;
+  current_idx   = mapped.id;
+  //disp_status(JSON.stringify(current_mappings))
+  //disp_status(`current_table_src: ${current_table_src} current_nodes_col: ${current_nodes_col} current_ref_col: ${current_ref_col}` )
   update_ui();
 });
 //------------------------------------------------------------------------------
@@ -47,24 +50,13 @@ async function initialize_widget() {
   cfg_table_id = await grist.selectedTable.getTableId();
   
   await init_dropdown_table_src();
-  disp_status('dropdown_table updated.');
-  
   await init_dropdown_nodes_col();
-  disp_status('dropdown_col updated.');
-  
   await init_dropdown_ref_column(); 
-  disp_status('dropdown_ref updated.');
-  
-  await init_button_choose(); 
-  disp_status('button_choose updated.')
-  
+  await init_button_new(); 
   await init_button_update(); 
-  disp_status('button_update updated.');
-  
-  await init_button_modify(); 
-  disp_status('button_test updated.');
-
+  await init_button_del(); 
   await update_ui();
+
   disp_status('Ready.');
 };
 //------------------------------------------------------------------------------
@@ -74,32 +66,12 @@ async function initialize_widget() {
 async function update_ui() {
   cfg_table= await grist.docApi.fetchTable(cfg_table_id);
   n_rows = cfg_table.id.length;
-  button_choose.textContent ='Choose';
-
-  // We check if we can add a new set of nodes
-  if ((current_table_src!='')&&(current_nodes_col!='')&&(current_ref_col=='')){
-    button_choose.textContent ='Add';
-  }
   
-  // We check if we can add a new set of edges
-  if ((current_table_src!='')&&(current_nodes_col!='')&&(current_ref_col!='')){
-    button_choose.textContent ='Add';
-  }
-
-  // Look for the currently selected record. If found we can have the option to remove it.
-  for(let i=0; i<=n_rows;i++) {
-     if ((cfg_table.table_source[i]==current_table_src)&&
-        (cfg_table.nodes_column[i]==current_nodes_col)&&
-        (cfg_table.ref_column[i]==current_ref_col)) {
-          current_idx= cfg_table.id[i];
-          await grist.setCursorPos({ rowId: current_idx });
-          button_choose.textContent='Remove';
-          break;
-        }
-  }
   
   dropdown_table_src.value = current_table_src;  
-  await update_dropdown_nodes();  
+  if (current_table_src != '') {
+    await update_dropdown_nodes();  
+  }
   dropdown_nodes.value = current_nodes_col; 
   dropdown_refs.value = current_ref_col;
 
@@ -132,7 +104,7 @@ async function get_type_from_col_ref(table_source, col_ref) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // init/updater nodes and egdes column dropdown
-async function date_dropdown_nodes() {
+async function update_dropdown_nodes() {
   // update the list of choices for dropdown_nodes, based on current_table_src
   // disp_status(= `Selected new table ${current_table_src}`;)
     
@@ -144,7 +116,7 @@ async function date_dropdown_nodes() {
   
   const num_rows = all_cols.id.length;
   const cols_text = ['id'];
-  const cols_ref = []; 
+  const cols_ref = ['']; 
     
   for (let i=0; i<=num_rows; i++) {
     parentId = all_cols.parentId[i]
@@ -199,9 +171,20 @@ async function init_dropdown_table_src() {
 
   dropdown_table_src.onchange=  async (event) => {
     current_table_src = event.target.value;
-    await update_dropdown_nodes();
-    current_nodes_col = '';
-    current_ref_col = '';
+    
+    const internalFields = {
+          id: current_idx,
+          table_source: current_table_src,
+          nodes_column: current_nodes_col,
+          ref_column: current_ref_col,
+        };
+    const mappedFields = grist.mapColumnNamesBack(internalFields);
+    const { id, ...fields } = mappedFields;    
+
+    await grist.selectedTable.update({
+      id: id,        
+      fields: fields
+      })  
     await update_ui()
   };
 };
@@ -211,8 +194,22 @@ async function init_dropdown_table_src() {
 // init column 
 async function init_dropdown_nodes_col() {
   dropdown_nodes.onchange = async (event) => {
-    current_nodes_col = event.target.value;    
-    await update_ui()
+    current_nodes_col = event.target.value;
+    
+    const internalFields = {
+          id: current_idx,
+          table_source: current_table_src,
+          nodes_column: current_nodes_col,
+          ref_column: current_ref_col,
+        };
+    const mappedFields = grist.mapColumnNamesBack(internalFields);
+    const { id, ...fields } = mappedFields;    
+
+    await grist.selectedTable.update({
+      id: id,        
+      fields: fields
+      })  
+    //await update_ui()
   }
 }
 //------------------------------------------------------------------------------
@@ -221,57 +218,64 @@ async function init_dropdown_nodes_col() {
 // init refs
 async function init_dropdown_ref_column() {
   dropdown_refs.onchange = async (event) => {
-    current_ref_col = event.target.value;  
-    await update_ui()
+    current_ref_col = event.target.value;
+    const internalFields = {
+          id: current_idx,
+          table_source: current_table_src,
+          nodes_column: current_nodes_col,
+          ref_column: current_ref_col,
+        };
+    const mappedFields = grist.mapColumnNamesBack(internalFields);
+    const { id, ...fields } = mappedFields;    
+
+    await grist.selectedTable.update({
+      id: id,        
+      fields: fields
+      })   
+    //await update_ui()
   }
 }
 //------------------------------------------------------------------------------
 
 ////////////////////////////////////////////////////////////////////////////////
 // init button 
-async function init_button_choose() {
-  button_choose.onclick = async () => {
-    reset_status()
-    if (button_choose.textContent=='Choose') {
-      disp_status('Pick at least a table and a column')
-    }
-    else if (button_choose.textContent=='Remove') {
-      await grist.docApi.applyUserActions([
-        [
-          "RemoveRecord", 
-          cfg_table_id, 
-          current_idx
-        ]
-      ]);
-    }
-    else if (button_choose.textContent=='Add') {
-      await grist.selectedTable.create({
-        fields: {
-          table_source: current_table_src,
-          nodes_column: current_nodes_col,
-          ref_column: current_ref_col,
-        }
-      }) 
-    }
-    update_ui();
+async function init_button_new() {
+  button_new.onclick = async () => {
+    
+    const internalFields=   {
+      table_source: '',
+      nodes_column: '',
+      ref_column: ''
+    };
+    
+    const mappedFields = grist.mapColumnNamesBack(internalFields);
+    const { id, ...fields } = mappedFields;    
+
+    const res = await grist.selectedTable.create({
+      fields: fields 
+    });
+
+    await grist.setCursorPos({
+      rowId: res.id
+    });
+
   };
 }
 //------------------------------------------------------------------------------
 
 ////////////////////////////////////////////////////////////////////////////////
 // init button 
-async function init_button_modify() {
-  button_modify.onclick = async () => {
+async function init_button_del() {
+  button_del.onclick = async () => {
     reset_status()
-    disp_status(`Modify current_idx: ${current_idx}`)
-      await grist.selectedTable.update({
-      id: current_idx,        
-      fields: {
-          table_source: current_table_src,
-          nodes_column: current_nodes_col,
-          ref_column: current_ref_col,
-        }
-      })
+    await grist.docApi.applyUserActions([
+        [
+          "RemoveRecord", 
+          cfg_table_id, 
+          current_idx
+        ]
+    ]);
+    //update_ui()
   }
 }
 //------------------------------------------------------------------------------
@@ -293,9 +297,9 @@ async function init_button_update() {
     ];
     added_nodes_table = []; // track nodes already added  
     for(let i=0; i<n_rows; i++) {
-      const table_id = cfg_table.table_source[i]
-      const nodes_col_id = cfg_table.nodes_column[i]
-      const ref_col_id = cfg_table.ref_column[i]
+      const table_id = cfg_table[current_mappings['table_source']][i];
+      const nodes_col_id = cfg_table[current_mappings['nodes_column']][i];
+      const ref_col_id = cfg_table[current_mappings['ref_column']][i];
       if (!added_nodes_table.includes(table_id)) {
 
         const node_color = palette[i % palette.length];
@@ -371,7 +375,7 @@ async function init_button_update() {
 ////////////////////////////////////////////////////////////////////////////////
 // disp, append and reset status
 function disp_status(txt) {
-  status_div.textContent = `\n${txt}`;
+  status_div.textContent += `\n${txt}`;
 }
 function reset_status() {
   status_div.textContent ='';
@@ -379,7 +383,6 @@ function reset_status() {
 //------------------------------------------------------------------------------
 
 ////////////////////////////////////////////////////////////////////////////////
-
 // display_graph
 async function display_graph() {
 
